@@ -58,6 +58,7 @@ public:
     gen_node_ = false;
     gen_jquery_ = false;
     gen_ts_ = false;
+    gen_node_ts_ = false;
     for( iter = parsed_options.begin(); iter != parsed_options.end(); ++iter) {
       if( iter->first.compare("node") == 0) {
         gen_node_ = true;
@@ -65,6 +66,8 @@ public:
         gen_jquery_ = true;
       } else if( iter->first.compare("ts") == 0) {
         gen_ts_ = true;
+      } else if ( iter->first.compare("node-ts") == 0) {
+        gen_node_ts_ = true;
       } else {
         throw "unknown option js:" + iter->first; 
       }
@@ -79,8 +82,15 @@ public:
             "js:jquery]";
     }
 
+    if (gen_node_ts_ && (gen_node_ || gen_jquery_ || gen_ts_)) {
+      throw "Invalid switch: [-gen js:node-ts,[jquery|node|ts]] options not compatible, try: [-gen js:node-ts -gen "
+            "js:jquery -gen js:node -gen js:ts]"; 
+    }
+
     if (gen_node_) {
       out_dir_base_ = "gen-nodejs";
+    } else if (gen_node_ts_) {
+      out_dir_base_ = "gen-node-ts";
     } else {
       out_dir_base_ = "gen-js";
     }
@@ -174,6 +184,7 @@ public:
    */
 
   std::string js_includes();
+  std::string ts_includes();
   std::string render_includes();
   std::string declare_field(t_field* tfield, bool init = false, bool obj = false);
   std::string function_signature(t_function* tfunction,
@@ -212,18 +223,27 @@ public:
   }
 
   std::string js_type_namespace(t_program* p) {
+    if (gen_node_ts_ && p != NULL && p != program_) {
+      return make_valid_nodeJs_identifier(p->get_name()) + "_ttypes.";
+    } else {
+      return "";
+    }
     if (gen_node_) {
       if (p != NULL && p != program_) {
         return make_valid_nodeJs_identifier(p->get_name()) + "_ttypes.";
       }
       return "ttypes.";
     }
+    
     return js_namespace(p);
   }
 
   std::string js_export_namespace(t_program* p) {
     if (gen_node_) {
       return "exports.";
+    }
+    if (gen_node_ts_) {
+      return "export ";
     }
     return js_namespace(p);
   }
@@ -306,6 +326,12 @@ private:
    */
   bool gen_ts_;
 
+
+  /**
+   * True if we should generate TypeScript
+   */
+   bool gen_node_ts_;
+
   /**
    * The name of the defined module(s), for TypeScript Definition Files.
    */
@@ -333,7 +359,8 @@ void t_js_generator::init_generator() {
   string outdir = get_out_dir();
 
   // Make output file(s)
-  string f_types_name = outdir + program_->get_name() + "_types.js";
+  const string f_types_prefix = outdir  + program_->get_name() + "_types";
+  const string f_types_name = f_types_prefix + (gen_node_ts_ ? ".ts" : ".js"); 
   f_types_.open(f_types_name.c_str());
 
   if (gen_ts_) {
@@ -342,7 +369,7 @@ void t_js_generator::init_generator() {
   }
 
   // Print header
-  f_types_ << autogen_comment() << js_includes() << endl << render_includes() << endl;
+  f_types_ << autogen_comment() << js_includes() << ts_includes() << endl << render_includes() << endl;
 
   if (gen_ts_) {
     f_types_ts_ << autogen_comment() << endl;
@@ -351,22 +378,49 @@ void t_js_generator::init_generator() {
   if (gen_node_) {
     f_types_ << "var ttypes = module.exports = {};" << endl;
   }
+  
+  if (gen_node_ts_) { // namespace is just the dir structure for actual TypeScript
+    f_types_ << endl;
+    
+    f_types_ <<  "export interface ThriftReadProtocol {" << endl;
+    indent_up();
+    f_types_ << indent() << " readStructBegin(): void;" << endl;
+    f_types_ << indent() << " readFieldBegin(): {fname: string; ftype: number; fid: number;};" << endl;
+    f_types_ << indent() << " skip(number): void;" << endl;
+    f_types_ << indent() << " readFieldEnd(): void;" << endl;
+    f_types_ << indent() << " readDouble(): {value: number};" << endl;
+    f_types_ << indent() << " readString(): {value: string};" << endl;
+    f_types_ << indent() << " readStructEnd(): void;" << endl;
+    indent_down();
+    f_types_ << "}" << endl;
+    f_types_ <<  "export interface ThriftWriteProtocol {" << endl;
+    indent_up();
+    f_types_ << indent() << " writeStructBegin(s: string): void;" << endl;
+    f_types_ << indent() << " writeFieldBegin(fname: string, ftype: number, fid: number): void;" << endl;
+    f_types_ << indent() << " writeFieldStop(): void;" << endl;
+    f_types_ << indent() << " writeFieldEnd(): void;" << endl;
+    f_types_ << indent() << " writeStructEnd(): void;" << endl;
+    f_types_ << indent() << " writeString(s: string): void;" << endl;
+    f_types_ << indent() << " writeDouble(d: number): void;" << endl;
+    f_types_ << "}" << endl;
+    indent_down();
+  } else {
+    string pns;
 
-  string pns;
-
-  // setup the namespace
-  // TODO should the namespace just be in the directory structure for node?
-  vector<string> ns_pieces = js_namespace_pieces(program_);
-  if (ns_pieces.size() > 0) {
-    for (size_t i = 0; i < ns_pieces.size(); ++i) {
-      pns += ((i == 0) ? "" : ".") + ns_pieces[i];
-      f_types_ << "if (typeof " << pns << " === 'undefined') {" << endl;
-      f_types_ << "  " << pns << " = {};" << endl;
-      f_types_ << "}" << endl;
-    }
-    if (gen_ts_) {
-      ts_module_ = pns;
-      f_types_ts_ << "declare module " << ts_module_ << " {";
+    // setup the namespace
+    // TODO should the namespace just be in the directory structure for node?
+    vector<string> ns_pieces = js_namespace_pieces(program_);
+    if (ns_pieces.size() > 0) {
+      for (size_t i = 0; i < ns_pieces.size(); ++i) {
+        pns += ((i == 0) ? "" : ".") + ns_pieces[i];
+        f_types_ << "if (typeof " << pns << " === 'undefined') {" << endl;
+        f_types_ << "  " << pns << " = {};" << endl;
+        f_types_ << "}" << endl;
+      }
+      if (gen_ts_) {
+        ts_module_ = pns;
+        f_types_ts_ << "declare module " << ts_module_ << " {";
+      }
     }
   }
 }
@@ -382,6 +436,21 @@ string t_js_generator::js_includes() {
         "var Q = thrift.Q;\n");
   }
 
+  return "";
+}
+
+/**
+ * Prints standard ts imports
+ */
+string t_js_generator::ts_includes() {
+  if (gen_node_ts_) {
+    return string(
+      "import * as thrift from 'thrift';\n"
+      "import * as types from './" + program_->get_name() + "_types';\n"
+      "const Thrift = thrift.Thrift;\n"
+      "const Q = thrift.Q;\n"
+      );
+  }
   return "";
 }
 
@@ -402,6 +471,17 @@ string t_js_generator::render_includes() {
     }
   }
 
+  if (gen_node_ts_) {
+    const vector<t_program*>& includes = program_->get_includes();
+    for (size_t i = 0; i < includes.size(); ++i) {
+      result += "import * as " + make_valid_nodeJs_identifier(includes[i]->get_name()) + "_ttypes from './" + includes[i]->get_name()
+                + "_types';\n";
+    }
+    if (includes.size() > 0) {
+      result += "\n";
+    }
+  }
+
   return result;
 }
 
@@ -410,7 +490,6 @@ string t_js_generator::render_includes() {
  */
 void t_js_generator::close_generator() {
   // Close types file(s)
-
   f_types_.close();
 
   if (gen_ts_) {
@@ -437,11 +516,16 @@ void t_js_generator::generate_typedef(t_typedef* ttypedef) {
  * @param tenum The enumeration
  */
 void t_js_generator::generate_enum(t_enum* tenum) {
-  f_types_ << js_type_namespace(tenum->get_program()) << tenum->get_name() << " = {" << endl;
-
+  
   if (gen_ts_) {
     f_types_ts_ << ts_print_doc(tenum) << ts_indent() << ts_declare() << "enum "
                 << tenum->get_name() << " {" << endl;
+  }
+  if (gen_node_ts_) {
+    f_types_ << ts_print_doc(tenum) << ts_indent() << js_export_namespace(tenum->get_program()) << "enum "
+                << tenum->get_name() << " {" << endl;
+  } else {
+    f_types_ << js_type_namespace(tenum->get_program()) << tenum->get_name() << " = {" << endl;
   }
 
   indent_up();
@@ -455,7 +539,11 @@ void t_js_generator::generate_enum(t_enum* tenum) {
       // add 'value: key' in addition to 'key: value' for TypeScript enums
       f_types_ << indent() << "'" << value << "' : '" << (*c_iter)->get_name() << "'," << endl;
     }
-    f_types_ << indent() << "'" << (*c_iter)->get_name() << "' : " << value;
+    if (gen_node_ts_) {
+      f_types_ << ts_indent() << (*c_iter)->get_name() << " = " << value << endl;
+    } else {
+      f_types_ << indent() << "'" << (*c_iter)->get_name() << "' : " << value;
+    }
     if (c_iter != constants.end() - 1) {
       f_types_ << ",";
     }
@@ -479,8 +567,13 @@ void t_js_generator::generate_const(t_const* tconst) {
   string name = tconst->get_name();
   t_const_value* value = tconst->get_value();
 
-  f_types_ << js_type_namespace(program_) << name << " = ";
-  f_types_ << render_const_value(type, value) << ";" << endl;
+  if (gen_node_ts_) {
+    f_types_ << "const " << name << " = ";
+    f_types_ << render_const_value(type, value) << ";" << endl;
+  } else {
+    f_types_ << js_type_namespace(program_) << name << " = ";
+    f_types_ << render_const_value(type, value) << ";" << endl;
+  }
 
   if (gen_ts_) {
     f_types_ts_ << ts_print_doc(tconst) << ts_indent() << ts_declare() << "var " << name << ": "
@@ -526,7 +619,7 @@ string t_js_generator::render_const_value(t_type* type, t_const_value* value) {
   } else if (type->is_enum()) {
     out << value->get_integer();
   } else if (type->is_struct() || type->is_xception()) {
-    out << "new " << js_type_namespace(type->get_program()) << type->get_name() << "({" << endl;
+    out << "new " << js_type_namespace(type->get_program()) << type->get_name() << "({" << endl;  
     indent_up();
     const vector<t_field*>& fields = ((t_struct*)type)->get_members();
     vector<t_field*>::const_iterator f_iter;
@@ -654,7 +747,7 @@ void t_js_generator::generate_js_struct_definition(ofstream& out,
       out << prefix << tstruct->get_name() << " = function(args) {"
           << endl;
     }
-  } else {
+  } else if (!gen_node_ts_) {
     out << js_namespace(tstruct->get_program()) << tstruct->get_name() << " = function(args) {"
         << endl;
     if (gen_ts_) {
@@ -664,7 +757,46 @@ void t_js_generator::generate_js_struct_definition(ofstream& out,
     }
   }
 
-  indent_up();
+  if (gen_node_ts_) {
+    // open class signature
+    out << "export class " << tstruct->get_name();
+    out << (is_exception ? " extends Thrift.TException" : "");
+    out << " {" << endl;
+    indent_up();
+    // error properties
+    if (is_exception) {
+      out << indent() << "name: string = '" << tstruct->get_name() << "'" << endl;
+    }
+    // class properties
+    for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
+      string dval = declare_field(*m_iter, false, true);
+      t_type* t = get_true_type((*m_iter)->get_type());
+      if ((*m_iter)->get_value() != NULL && !(t->is_struct() || t->is_xception())) {
+        out << (*m_iter)->get_name() << ": " << ts_get_type((*m_iter)->get_type()) << " = ";
+        out << render_const_value((*m_iter)->get_type(), (*m_iter)->get_value());
+        out << ";" << endl;
+      } else {
+        out << indent() << dval << ";" << endl;
+      }
+    }
+  }
+
+  if (gen_node_ts_) {
+    out << indent() << "constructor(args?: {" << endl;
+    indent_up();
+    for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
+      if ((*m_iter)->get_name() == string("error")) {
+        out << indent() << "error?;" << endl;
+        continue;
+      }
+      out << indent() << (*m_iter)->get_name() << ts_get_req(*m_iter) << ": ";
+      out << ts_get_type((*m_iter)->get_type()) << ";" << endl;
+    }
+    indent_down();
+    out << indent() << "}) {" << endl;
+    indent_up();
+    out << indent() << (is_exception ? "super(args);\n" : "");
+  }
 
   if (gen_node_ && is_exception) {
     out << indent() << "Thrift.TException.call(this, \"" << js_namespace(tstruct->get_program())
@@ -673,19 +805,21 @@ void t_js_generator::generate_js_struct_definition(ofstream& out,
         << tstruct->get_name() << "\"" << endl;
   }
 
-  // members with arguments
-  for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
-    string dval = declare_field(*m_iter, false, true);
-    t_type* t = get_true_type((*m_iter)->get_type());
-    if ((*m_iter)->get_value() != NULL && !(t->is_struct() || t->is_xception())) {
-      dval = render_const_value((*m_iter)->get_type(), (*m_iter)->get_value());
-      out << indent() << "this." << (*m_iter)->get_name() << " = " << dval << ";" << endl;
-    } else {
-      out << indent() << dval << ";" << endl;
-    }
-    if (gen_ts_) {
-      f_types_ts_ << ts_indent() << (*m_iter)->get_name() << ": "
-                  << ts_get_type((*m_iter)->get_type()) << ";" << endl;
+  if (!gen_node_ts_) { // class properties already rendered
+    // members with arguments
+    for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
+      string dval = declare_field(*m_iter, false, true);
+      t_type* t = get_true_type((*m_iter)->get_type());
+      if ((*m_iter)->get_value() != NULL && !(t->is_struct() || t->is_xception())) {
+        dval = render_const_value((*m_iter)->get_type(), (*m_iter)->get_value());
+        out << indent() << "this." << (*m_iter)->get_name() << " = " << dval << ";" << endl;
+      } else {
+        out << indent() << dval << ";" << endl;
+      }
+      if (gen_ts_) {
+        f_types_ts_ << ts_indent() << (*m_iter)->get_name() << ": "
+                    << ts_get_type((*m_iter)->get_type()) << ";" << endl;
+      }
     }
   }
 
@@ -695,31 +829,45 @@ void t_js_generator::generate_js_struct_definition(ofstream& out,
     for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
       t_type* t = get_true_type((*m_iter)->get_type());
       if ((*m_iter)->get_value() != NULL && (t->is_struct() || t->is_xception())) {
-        indent(out) << "this." << (*m_iter)->get_name() << " = "
+        indent(out) << (gen_node_ts_ ? "this." : "") << (*m_iter)->get_name() 
+                    << (gen_node_ts_ ? ": "+ts_get_type((*m_iter)->get_type()) : "") << " = "
                     << render_const_value(t, (*m_iter)->get_value()) << ";" << endl;
       }
     }
-
     // Early returns for exceptions
     for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
       t_type* t = get_true_type((*m_iter)->get_type());
       if (t->is_xception()) {
         out << indent() << "if (args instanceof " << js_type_namespace(t->get_program())
-            << t->get_name() << ") {" << endl << indent() << indent() << "this."
-            << (*m_iter)->get_name() << " = args;" << endl << indent() << indent() << "return;"
+            << t->get_name() << ") {" << endl << indent() 
+            << indent() << "this." << (*m_iter)->get_name()
+            << " = args" << (gen_node_ts_ ? " as any;" : ";") << endl << indent() << indent() << "return;"
             << endl << indent() << "}" << endl;
       }
     }
-
+    if (gen_node_ts_) {
+      if (is_exception) {
+        indent_up();
+      } else {
+        indent_down();
+      }
+    }
+    indent_down();
     out << indent() << "if (args) {" << endl;
     if (gen_ts_) {
       f_types_ts_ << endl << ts_indent() << "constructor(args?: { ";
     }
-
+    if (!is_exception) {
+      indent_up();
+      indent_up();
+    }
+    indent_up();
     for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
       t_type* t = get_true_type((*m_iter)->get_type());
-      out << indent() << indent() << "if (args." << (*m_iter)->get_name() << " !== undefined && args." << (*m_iter)->get_name() << " !== null) {"
-          << endl << indent() << indent() << indent() << "this." << (*m_iter)->get_name();
+      out << indent() << "if (args." << (*m_iter)->get_name() 
+        << " !== undefined && args." << (*m_iter)->get_name() << " !== null) {" << endl;
+      indent_up();
+      out << indent() << "this." << (*m_iter)->get_name();
 
       if (t->is_struct()) {
         out << (" = new " + js_type_namespace(t->get_program()) + t->get_name() +
@@ -757,44 +905,57 @@ void t_js_generator::generate_js_struct_definition(ofstream& out,
       } else {
         out << " = args." << (*m_iter)->get_name() << ";" << endl;
       }
-
+      indent_down();
       if (!(*m_iter)->get_req()) {
-        out << indent() << indent() << "} else {" << endl << indent() << indent() << indent()
-            << "throw new Thrift.TProtocolException(Thrift.TProtocolExceptionType.UNKNOWN, "
+        out << indent() << "} else {" << endl;
+        indent_up();
+        out << indent() << "throw new Thrift.TProtocolException(Thrift.TProtocolExceptionType.UNKNOWN, "
                "'Required field " << (*m_iter)->get_name() << " is unset!');" << endl;
+        indent_down();
       }
-      out << indent() << indent() << "}" << endl;
+      out << indent() << "}" << endl;
       if (gen_ts_) {
         f_types_ts_ << (*m_iter)->get_name() << ts_get_req(*m_iter) << ": "
                     << ts_get_type((*m_iter)->get_type()) << "; ";
       }
     }
-
+    indent_down();
     out << indent() << "}" << endl;
     if (gen_ts_) {
       f_types_ts_ << "});" << endl;
     }
   }
-
-  indent_down();
-  out << "};" << endl;
-  if (gen_ts_) {
-    f_types_ts_ << ts_indent() << "}" << endl;
-  }
-
-  if (is_exception) {
-    out << "Thrift.inherits(" << js_namespace(tstruct->get_program()) << tstruct->get_name()
-        << ", Thrift.TException);" << endl;
-    out << js_namespace(tstruct->get_program()) << tstruct->get_name() << ".prototype.name = '"
-        << tstruct->get_name() << "';" << endl;
+  if (gen_node_ts_) {
+    // close constructor
+    indent_down();
+    out << indent() << "}" << endl;
   } else {
-    // init prototype
-    out << js_namespace(tstruct->get_program()) << tstruct->get_name() << ".prototype = {};"
-        << endl;
+    indent_down();
+    out << "};" << endl;
+    if (gen_ts_) {
+      f_types_ts_ << ts_indent() << "}" << endl;
+    }
+
+    if (is_exception) {
+      out << "Thrift.inherits(" << js_namespace(tstruct->get_program()) << tstruct->get_name()
+          << ", Thrift.TException);" << endl;
+      out << js_namespace(tstruct->get_program()) << tstruct->get_name() << ".prototype.name = '"
+          << tstruct->get_name() << "';" << endl;
+    } else {
+      // init prototype
+      out << js_namespace(tstruct->get_program()) << tstruct->get_name() << ".prototype = {};"
+          << endl;
+    }
   }
 
   generate_js_struct_reader(out, tstruct);
   generate_js_struct_writer(out, tstruct);
+  if (gen_node_ts_) {
+    // close class
+    indent_down();
+    out << "}" << endl;
+  }
+
 }
 
 /**
@@ -804,9 +965,12 @@ void t_js_generator::generate_js_struct_reader(ofstream& out, t_struct* tstruct)
   const vector<t_field*>& fields = tstruct->get_members();
   vector<t_field*>::const_iterator f_iter;
 
-  out << js_namespace(tstruct->get_program()) << tstruct->get_name()
-      << ".prototype.read = function(input) {" << endl;
-
+  if (gen_node_ts_) {
+    out << indent() << "read(input: ThriftReadProtocol): void {" << endl;
+  } else {
+    out << js_namespace(tstruct->get_program()) << tstruct->get_name();
+    out << ".prototype.read = function(input) {" << endl;
+  }
   indent_up();
 
   indent(out) << "input.readStructBegin();" << endl;
@@ -884,9 +1048,12 @@ void t_js_generator::generate_js_struct_writer(ofstream& out, t_struct* tstruct)
   const vector<t_field*>& fields = tstruct->get_members();
   vector<t_field*>::const_iterator f_iter;
 
-  out << js_namespace(tstruct->get_program()) << tstruct->get_name()
+  if (gen_node_ts_) {
+    out << indent() << "write(output: ThriftWriteProtocol): void {" << endl;
+  } else {
+    out << js_namespace(tstruct->get_program()) << tstruct->get_name()
       << ".prototype.write = function(output) {" << endl;
-
+  }
   indent_up();
 
   indent(out) << "output.writeStructBegin('" << name << "');" << endl;
@@ -924,7 +1091,8 @@ void t_js_generator::generate_js_struct_writer(ofstream& out, t_struct* tstruct)
  * @param tservice The service definition
  */
 void t_js_generator::generate_service(t_service* tservice) {
-  string f_service_name = get_out_dir() + service_name_ + ".js";
+
+  string f_service_name = get_out_dir() + service_name_ + (gen_node_ts_ ? ".ts" : ".js");  
   f_service_.open(f_service_name.c_str());
 
   if (gen_ts_) {
@@ -958,14 +1126,31 @@ void t_js_generator::generate_service(t_service* tservice) {
     f_service_ << "var ttypes = require('./" + program_->get_name() + "_types');" << endl;
   }
 
+  if (gen_node_ts_) {
+    if (tservice->get_extends() != NULL) {
+      const string nameBeingExtended = tservice->get_extends()->get_name();
+      f_service_ << "import * as " << nameBeingExtended << " from './"
+                 << nameBeingExtended << "';" << endl;
+      f_service_ << "const " << nameBeingExtended << "Client = " << nameBeingExtended << ".Client;" << endl;
+      f_service_ << "const " << nameBeingExtended << "Processor = " << nameBeingExtended << ".Processor;" << endl;
+    }
+    f_service_ << "import * as thrift from 'thrift';" << endl;
+    f_service_ << "const Q = thrift.Q;" << endl;
+    f_service_ << "const Thrift = thrift.Thrift;" << endl;
+    f_service_ << "import {ThriftReadProtocol, ThriftWriteProtocol} from './" << program_->get_name() + "_types';" << endl;
+    f_service_ << "import * as types from './" << program_->get_name() + "_types';" << endl;
+  }
+
   generate_service_helpers(tservice);
   generate_service_interface(tservice);
   generate_service_client(tservice);
 
-  if (gen_node_) {
+  if (gen_node_ || gen_node_ts_) {
     generate_service_processor(tservice);
   }
-
+  if (gen_node_ts_) {
+    f_service_ << "}" << endl;
+  }
   f_service_.close();
   if (gen_ts_) {
     if (!ts_module_.empty()) {
@@ -987,6 +1172,11 @@ void t_js_generator::generate_service_processor(t_service* tservice) {
   if (gen_node_) {
     string prefix = has_js_namespace(tservice->get_program()) ? js_namespace(tservice->get_program()) : "var ";
     f_service_ << prefix << service_name_ << "Processor = " << "exports.Processor = function(handler) ";
+  } else if (gen_node_ts_) {
+    f_service_ << "export class Processor ";
+    if (tservice->get_extends() != NULL) {
+      f_service_ << " extends " << tservice->get_extends()->get_name() << "Processor " << endl;
+    }
   } else {
     f_service_ << js_namespace(tservice->get_program()) << service_name_ << "Processor = "
              << "exports.Processor = function(handler) ";
@@ -994,19 +1184,36 @@ void t_js_generator::generate_service_processor(t_service* tservice) {
 
   scope_up(f_service_);
 
-  f_service_ << indent() << "this._handler = handler" << endl;
+  if (gen_node_ts_) {
+    indent_up();
+    f_service_ << indent() << "constructor(private _handler) {";
+    if (tservice->get_extends() != NULL) { 
+      indent_up();
+      f_service_ << endl << indent() << "super(_handler);" << endl;
+      indent_down();  
+      f_service_ << indent() << "}" << endl;
+    } else {
+      f_service_ << "}" << endl;
+    }
+  } else {
+    f_service_ << indent() << "this._handler = handler" << endl;
+    scope_down(f_service_);
+  }
 
-  scope_down(f_service_);
 
-  if (tservice->get_extends() != NULL) {
+  if (tservice->get_extends() != NULL && !gen_node_ts_) {
     indent(f_service_) << "Thrift.inherits(" << js_namespace(tservice->get_program())
                        << service_name_ << "Processor, " << tservice->get_extends()->get_name()
                        << "Processor)" << endl;
   }
 
   // Generate the server implementation
-  indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
+  if (gen_node_ts_) { 
+    indent(f_service_) << "process(input, output) "; 
+  } else {
+    indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
                      << "Processor.prototype.process = function(input, output) ";
+  }
 
   scope_up(f_service_);
 
@@ -1038,17 +1245,20 @@ void t_js_generator::generate_service_processor(t_service* tservice) {
  * @param tfunction The function to write a dispatcher for
  */
 void t_js_generator::generate_process_function(t_service* tservice, t_function* tfunction) {
-  indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
+  if (gen_node_ts_) {
+    indent(f_service_) << "process_" + tfunction->get_name() + "(seqid, input, output) ";
+  } else {
+    indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
                      << "Processor.prototype.process_" + tfunction->get_name()
                         + " = function(seqid, input, output) ";
-
+  }
   scope_up(f_service_);
 
   string argsname = js_namespace(program_) + service_name_ + "_" + tfunction->get_name() + "_args";
   string resultname = js_namespace(program_) + service_name_ + "_" + tfunction->get_name()
                       + "_result";
 
-  f_service_ << indent() << "var args = new " << argsname << "();" << endl << indent()
+  f_service_ << indent() << "var args = new " << argsname << "()" << (gen_node_ts_ ? "as any;" : ";") << endl << indent()
              << "args.read(input);" << endl << indent() << "input.readMessageEnd();" << endl;
 
   // Generate the function call
@@ -1087,9 +1297,13 @@ void t_js_generator::generate_process_function(t_service* tservice, t_function* 
 
   f_service_ << ")" << endl;
   indent_up();
-  indent(f_service_) << ".then(function(result) {" << endl;
+  indent(f_service_) << ".then(function(result";
+  if (gen_node_ts_) {
+    f_service_ << ": " << ts_get_type(tfunction->get_returntype());
+  }
+  f_service_ << ") {" << endl;
   indent_up();
-  f_service_ << indent() << "var result = new " << resultname << "({success: result});" << endl
+  f_service_ << indent() << "result = new " << resultname << "({success: result})" << (gen_node_ts_ ? " as any;" : ";") << endl
              << indent() << "output.writeMessageBegin(\"" << tfunction->get_name()
              << "\", Thrift.MessageType.REPLY, seqid);" << endl << indent()
              << "result.write(output);" << endl << indent() << "output.writeMessageEnd();" << endl
@@ -1120,7 +1334,7 @@ void t_js_generator::generate_process_function(t_service* tservice, t_function* 
   if (has_exception) {
     f_service_ << ") {" << endl;
     indent_up();
-    f_service_ << indent() << "var result = new " << resultname << "(err);" << endl << indent()
+    f_service_ << indent() << "result = new " << resultname << "(err)" << (gen_node_ts_ ? " as any;" : ";") << endl << indent()
                << "output.writeMessageBegin(\"" << tfunction->get_name()
                << "\", Thrift.MessageType.REPLY, seqid);" << endl;
 
@@ -1131,7 +1345,7 @@ void t_js_generator::generate_process_function(t_service* tservice, t_function* 
 
   f_service_ << indent() << "var result = new "
                             "Thrift.TApplicationException(Thrift.TApplicationExceptionType.UNKNOWN,"
-                            " err.message);" << endl << indent() << "output.writeMessageBegin(\""
+                            " err.message)" << (gen_node_ts_ ? " as any;" : ";") << endl << indent() << "output.writeMessageBegin(\""
              << tfunction->get_name() << "\", Thrift.MessageType.EXCEPTION, seqid);" << endl;
 
   if (has_exception) {
@@ -1169,7 +1383,7 @@ void t_js_generator::generate_process_function(t_service* tservice, t_function* 
   f_service_ << ") {" << endl;
   indent_up();
   f_service_ << indent() << "var result = new " << resultname
-             << "((err != null ? err : {success: result}));" << endl << indent()
+             << "((err != null ? err : {success: result}))" << (gen_node_ts_ ? " as any;" : ";") << endl << indent()
              << "output.writeMessageBegin(\"" << tfunction->get_name()
              << "\", Thrift.MessageType.REPLY, seqid);" << endl;
   indent_down();
@@ -1177,7 +1391,7 @@ void t_js_generator::generate_process_function(t_service* tservice, t_function* 
   indent_up();
   f_service_ << indent() << "var result = new "
                             "Thrift.TApplicationException(Thrift.TApplicationExceptionType.UNKNOWN,"
-                            " err.message);" << endl << indent() << "output.writeMessageBegin(\""
+                            " err.message)" << (gen_node_ts_ ? " as any;" : ";") << endl << indent() << "output.writeMessageBegin(\""
              << tfunction->get_name() << "\", Thrift.MessageType.EXCEPTION, seqid);" << endl;
   indent_down();
   f_service_ << indent() << "}" << endl << indent() << "result.write(output);" << endl << indent()
@@ -1203,11 +1417,47 @@ void t_js_generator::generate_service_helpers(t_service* tservice) {
 
   vector<t_function*> functions = tservice->get_functions();
   vector<t_function*>::iterator f_iter;
-
+  map<string, bool> types_to_import;
   f_service_ << "//HELPER FUNCTIONS AND STRUCTURES" << endl << endl;
-
   for (f_iter = functions.begin(); f_iter != functions.end(); ++f_iter) {
     t_struct* ts = (*f_iter)->get_arglist();
+    if (gen_node_ts_) {
+      
+      const vector<t_field*>& members = ts->get_members();
+      vector<t_field*>::const_iterator m_iter;
+      for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
+        std::cout << "checking type " << ts_get_type((*m_iter)->get_type()) << endl;
+        if (!types_to_import[(*m_iter)->get_name()]) {
+          t_type* type = get_true_type((*m_iter)->get_type());
+          types_to_import[type->get_name()] = true;
+          if (type->is_enum() || type->is_struct() || type->is_xception()) {
+            f_service_ << "import {" << ts_get_type((*m_iter)->get_type()) << "} from './" 
+              << program_->get_name() << "_types';" << endl; 
+          }
+        }
+      }
+      const vector<t_field*>& exceptions = (*f_iter)->get_xceptions()->get_members();
+      for (m_iter = exceptions.begin(); m_iter != exceptions.end(); ++m_iter) {
+        std::cout << "checking type " << ts_get_type((*m_iter)->get_type()) << endl;
+        if (!types_to_import[(*m_iter)->get_name()]) {
+          t_type* type = get_true_type((*m_iter)->get_type());
+          types_to_import[type->get_name()] = true;
+          if (type->is_enum() || type->is_struct() || type->is_xception()) {
+            f_service_ << "import {" << ts_get_type((*m_iter)->get_type()) << "} from './" 
+              << program_->get_name() << "_types';" << endl; 
+          }
+        }
+      }
+      t_type* type = (*f_iter)->get_returntype();
+      if (!types_to_import[type->get_name()]) {
+        types_to_import[type->get_name()] = true;
+        std::cout << "checking type " << ts_get_type(type) << endl;
+        if (type->is_enum() || type->is_struct() || type->is_xception()) {
+          f_service_ << "import {" << ts_get_type(type) << "} from './" 
+            << program_->get_name() << "_types';" << endl; 
+        }
+      }
+    }
     string name = ts->get_name();
     ts->set_name(service_name_ + "_" + name);
     generate_js_struct_definition(f_service_, ts, false, false);
@@ -1246,6 +1496,9 @@ void t_js_generator::generate_js_function_helpers(t_function* tfunction) {
  * @param tservice The service to generate a header definition for
  */
 void t_js_generator::generate_service_interface(t_service* tservice) {
+  if (gen_node_ts_) {
+    f_service_ << "export interface " << tservice->get_name() << "{}" << endl;
+  }
   (void)tservice;
 }
 
@@ -1266,6 +1519,12 @@ void t_js_generator::generate_service_client(t_service* tservice) {
     string prefix = has_js_namespace(tservice->get_program()) ? js_namespace(tservice->get_program()) : "var ";
     f_service_ << prefix << service_name_ << "Client = "
                << "exports.Client = function(output, pClass) {" << endl;
+  } else if (gen_node_ts_) {
+    f_service_ << "export class Client ";
+    if (tservice->get_extends() != NULL) {
+        f_service_ << "extends " << tservice->get_extends()->get_name() << "Client ";
+    }
+    f_service_ << "{" << endl;
   } else {
     f_service_ << js_namespace(tservice->get_program()) << service_name_
                << "Client = function(input, output) {" << endl;
@@ -1280,11 +1539,23 @@ void t_js_generator::generate_service_client(t_service* tservice) {
   }
 
   indent_up();
-
   if (gen_node_) {
     f_service_ << indent() << "  this.output = output;" << endl << indent()
                << "  this.pClass = pClass;" << endl << indent() << "  this._seqid = 0;" << endl
                << indent() << "  this._reqs = {};" << endl;
+  } else if (gen_node_ts_) {
+    f_service_ << indent() << "output: any = null;" << endl;
+    f_service_ << indent() << "pClass: any = null;" << endl;
+    f_service_ << indent() << "_reqs: any = {};" << endl;
+    f_service_ << indent() << "_seqid: number = 0;" << endl << endl;
+    f_service_ << indent() << "constructor(output: ThriftReadProtocol, pClass: any) {" << endl;
+    indent_up();
+    if (tservice->get_extends() != NULL) {
+      f_service_ << indent() << "super(output, pClass);";
+    }
+    f_service_ << indent() << "this.pClass = pClass;" << endl;
+    f_service_ << indent() << "this.output = output" << endl;
+    
   } else {
     f_service_ << indent() << "  this.input = input;" << endl << indent()
                << "  this.output = (!output) ? input : output;" << endl << indent()
@@ -1297,22 +1568,22 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                     << endl;
     }
   }
+    indent_down();
+    f_service_ << indent() << "};" << endl;
+  if (!gen_node_ts_) {
 
-  indent_down();
+    if (tservice->get_extends() != NULL) {
+      indent(f_service_) << "Thrift.inherits(" << js_namespace(tservice->get_program())
+                         << service_name_ << "Client, "
+                         << js_namespace(tservice->get_extends()->get_program())
+                         << tservice->get_extends()->get_name() << "Client);" << endl;
+    } else {
+      // init prototype
+      indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
+                         << "Client.prototype = {};" << endl;
+    }
 
-  f_service_ << indent() << "};" << endl;
-
-  if (tservice->get_extends() != NULL) {
-    indent(f_service_) << "Thrift.inherits(" << js_namespace(tservice->get_program())
-                       << service_name_ << "Client, "
-                       << js_namespace(tservice->get_extends()->get_program())
-                       << tservice->get_extends()->get_name() << "Client);" << endl;
-  } else {
-    // init prototype
-    indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
-                       << "Client.prototype = {};" << endl;
   }
-
   // utils for multiplexed services
   if (gen_node_) {
     indent(f_service_) << js_namespace(tservice->get_program()) << service_name_
@@ -1320,6 +1591,10 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                        << js_namespace(tservice->get_program()) << service_name_
                        << "Client.prototype.new_seqid = function() { return this._seqid += 1; }"
                        << endl;
+  }
+  if (gen_node_ts_) {
+    indent(f_service_) << "seqid(): number { return this._seqid; }" << endl;
+    indent(f_service_) << "new_seqid(): number { return this._seqid += 1; }" << endl;
   }
   // Generate client method implementations
   vector<t_function*> functions = tservice->get_functions();
@@ -1332,9 +1607,13 @@ void t_js_generator::generate_service_client(t_service* tservice) {
     string arglist = argument_list(arg_struct);
 
     // Open function
-    f_service_ << js_namespace(tservice->get_program()) << service_name_ << "Client.prototype."
+    if (gen_node_ts_) {
+      f_service_ << ts_print_doc(*f_iter);
+      f_service_ << function_signature(*f_iter, "", true) << " {" << endl;
+    } else {
+      f_service_ << js_namespace(tservice->get_program()) << service_name_ << "Client.prototype."
                << function_signature(*f_iter, "", true) << " {" << endl;
-
+    }
     indent_up();
 
     if (gen_ts_) {
@@ -1345,12 +1624,14 @@ void t_js_generator::generate_service_client(t_service* tservice) {
           ts_indent() << ts_function_signature(*f_iter, true) << endl;
     }
 
-    if (gen_node_) { // Node.js output      ./gen-nodejs
+    if (gen_node_ || gen_node_ts_) { // Node.js output      ./gen-nodejs
       f_service_ << indent() << "this._seqid = this.new_seqid();" << endl << indent()
                  << "if (callback === undefined) {" << endl;
       indent_up();
       f_service_ << indent() << "var _defer = Q.defer();" << endl << indent()
-                 << "this._reqs[this.seqid()] = function(error, result) {" << endl;
+                 << "this._reqs[this.seqid()] = function(error, result"
+                 << (gen_node_ts_ ? ":" + ts_get_type((*f_iter)->get_returntype()) : "")
+                 <<") {" << endl;
       indent_up();
       indent(f_service_) << "if (error) {" << endl;
       indent_up();
@@ -1413,14 +1694,17 @@ void t_js_generator::generate_service_client(t_service* tservice) {
 
     f_service_ << "};" << endl << endl;
 
+    if (gen_node_ts_) {
+      f_service_ << "send_" << function_signature(*f_iter, "", !gen_node_) << " {" << endl;
+    } else {
     // Send function
-    f_service_ << js_namespace(tservice->get_program()) << service_name_ << "Client.prototype.send_"
+      f_service_ << js_namespace(tservice->get_program()) << service_name_ << "Client.prototype.send_"
                << function_signature(*f_iter, "", !gen_node_) << " {" << endl;
-
+    }
     indent_up();
 
     std::string outputVar;
-    if (gen_node_) {
+    if (gen_node_ || gen_node_ts_) {
       f_service_ << indent() << "var output = new this.pClass(this.output);" << endl;
       outputVar = "output";
     } else {
@@ -1434,7 +1718,7 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                                                      : "Thrift.MessageType.CALL";
 
     // Serialize the request header
-    if (gen_node_) {
+    if (gen_node_ || gen_node_ts_) {
       f_service_ << indent() << outputVar << ".writeMessageBegin('" << (*f_iter)->get_name()
                  << "', " << messageType << ", this.seqid());" << endl;
     } else {
@@ -1442,7 +1726,7 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                  << "', " << messageType << ", this.seqid);" << endl;
     }
 
-    f_service_ << indent() << "var args = new " << argsname << "();" << endl;
+    f_service_ << indent() << "var args = new " << argsname << "()" << (gen_node_ts_ ? "as any;" : ";") << endl;
 
     for (fld_iter = fields.begin(); fld_iter != fields.end(); ++fld_iter) {
       f_service_ << indent() << "args." << (*fld_iter)->get_name() << " = "
@@ -1453,7 +1737,7 @@ void t_js_generator::generate_service_client(t_service* tservice) {
     f_service_ << indent() << "args.write(" << outputVar << ");" << endl << indent() << outputVar
                << ".writeMessageEnd();" << endl;
 
-    if (gen_node_) {
+    if (gen_node_ || gen_node_ts_) {
       f_service_ << indent() << "return this.output.flush();" << endl;
     } else {
       if (gen_jquery_) {
@@ -1488,7 +1772,10 @@ void t_js_generator::generate_service_client(t_service* tservice) {
         // Open function
         f_service_ << endl << js_namespace(tservice->get_program()) << service_name_
                    << "Client.prototype.recv_" << (*f_iter)->get_name()
-                   << " = function(input,mtype,rseqid) {" << endl;
+                   << " = function(input, mtype, rseqid) {" << endl;
+      } else if (gen_node_ts_) {
+        f_service_ << endl << "recv_" << (*f_iter)->get_name()
+                   << "(input, mtype, rseqid: number) {" << endl;
       } else {
         t_struct noargs(program_);
 
@@ -1503,13 +1790,13 @@ void t_js_generator::generate_service_client(t_service* tservice) {
       indent_up();
 
       std::string inputVar;
-      if (gen_node_) {
+      if (gen_node_ || gen_node_ts_) {
         inputVar = "input";
       } else {
         inputVar = "this.input";
       }
 
-      if (gen_node_) {
+      if (gen_node_ || gen_node_ts_) {
         f_service_ << indent() << "var callback = this._reqs[rseqid] || function() {};" << endl
                    << indent() << "delete this._reqs[rseqid];" << endl;
       } else {
@@ -1524,7 +1811,7 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                  << ".readMessageEnd();" << endl << indent() << "  " << render_recv_throw("x")
                  << endl << indent() << "}" << endl;
 
-      f_service_ << indent() << "var result = new " << resultname << "();" << endl << indent()
+      f_service_ << indent() << "var result = new " << resultname << "()" << (gen_node_ts_? " as any;": ";") << endl << indent()
                  << "result.read(" << inputVar << ");" << endl;
 
       f_service_ << indent() << inputVar << ".readMessageEnd();" << endl << endl;
@@ -1546,7 +1833,7 @@ void t_js_generator::generate_service_client(t_service* tservice) {
                    << render_recv_throw("'" + (*f_iter)->get_name() + " failed: unknown result'")
                    << endl;
       } else {
-        if (gen_node_) {
+        if (gen_node_ || gen_node_ts_) {
           indent(f_service_) << "callback(null)" << endl;
         } else {
           indent(f_service_) << "return;" << endl;
@@ -1558,8 +1845,10 @@ void t_js_generator::generate_service_client(t_service* tservice) {
       f_service_ << "};" << endl;
     }
   }
-
-  if (gen_ts_) {
+  if (gen_node_ts_) {
+    f_service_ << indent() << "}" << endl;
+  }
+  if (gen_ts_ ) {
     f_service_ts_ << ts_indent() << "}" << endl;
   }
 }
@@ -1954,10 +2243,15 @@ void t_js_generator::generate_serialize_list_element(ofstream& out, t_list* tlis
  * @param ttype The type
  */
 string t_js_generator::declare_field(t_field* tfield, bool init, bool obj) {
-  string result = "this." + tfield->get_name();
+
+  string result = (gen_node_ts_ ? "" : "this.") + tfield->get_name();
 
   if (!obj) {
     result = "var " + tfield->get_name();
+  }
+
+  if (gen_node_ts_) {
+    result += string(": ") + ts_get_type(tfield->get_type());
   }
 
   if (init) {
@@ -2009,7 +2303,9 @@ string t_js_generator::function_signature(t_function* tfunction,
                                           bool include_callback) {
 
   string str;
-
+  if (gen_node_ts_) {
+    return ts_function_signature(tfunction, include_callback);
+  }
   str = prefix + tfunction->get_name() + " = function(";
 
   str += argument_list(tfunction->get_arglist(), include_callback);
@@ -2177,12 +2473,12 @@ std::string t_js_generator::ts_function_signature(t_function* tfunction, bool in
   }
 
   if (include_callback) {
-    str += "callback: Function): ";
+    str += "callback?: (error: Error, result: any) => {}):";
 
     if (gen_jquery_) {
       str += "JQueryXHR;";
     } else {
-      str += "void;";
+      str += "void";
     }
   } else {
     str += "): " + ts_get_type(tfunction->get_returntype()) + ";";
@@ -2228,4 +2524,5 @@ THRIFT_REGISTER_GENERATOR(js,
                           "Javascript",
                           "    jquery:          Generate jQuery compatible code.\n"
                           "    node:            Generate node.js compatible code.\n"
-                          "    ts:              Generate TypeScript definition files.\n")
+                          "    ts:              Generate TypeScript definition files.\n"
+                          "    node-ts:         Generate ES6 compatible TypeScript code\n")
